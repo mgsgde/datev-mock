@@ -3,16 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unternehmen online (Mock)</title>
+<title>Belege-Portal (DATEV-Ersatz)</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <header class="topbar" id="topbar" data-testid="topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">UO</span>
-    <span class="brand-name">Unternehmen online</span>
-    <span class="mock-badge" id="mock-badge" data-testid="mock-badge">Mock / Testumgebung</span>
+    <span class="brand-mark" aria-hidden="true">BP</span>
+    <span class="brand-name">Belege-Portal (DATEV-Ersatz)</span>
+    <span class="mock-badge" id="mock-badge" data-testid="mock-badge">Testumgebung</span>
+    <span class="mock-params" id="mock-params" data-testid="mock-params" hidden></span>
   </div>
   <div class="topbar-right" id="topbar-right" hidden>
     <span class="topbar-meta" id="topbar-meta" data-testid="topbar-meta">Beraternummer 12345</span>
@@ -27,16 +28,12 @@
    <div class="login-wrap">
     <div class="login-card">
       <h1>Anmeldung</h1>
-      <p class="muted">Bitte melden Sie sich mit Ihren Zugangsdaten an.</p>
-      <form id="login-form" data-testid="login-form" novalidate autocomplete="off">
-        <label for="input-benutzername">Benutzername</label>
-        <input type="text" id="input-benutzername" data-testid="input-benutzername" name="benutzername" autocomplete="off" spellcheck="false">
-        <label for="input-passwort">Passwort</label>
-        <input type="password" id="input-passwort" data-testid="input-passwort" name="passwort" autocomplete="off">
-        <div class="msg msg-error" id="login-error" data-testid="login-error" hidden>Bitte Benutzername und Passwort eingeben.</div>
-        <button type="submit" class="btn btn-primary btn-block" id="btn-anmelden" data-testid="btn-anmelden">Anmelden</button>
-      </form>
-      <p class="hint">Testumgebung: Beliebige Werte werden akzeptiert. Es besteht keine Verbindung zu DATEV.</p>
+      <p class="muted">Bitte wählen Sie Ihr Anmeldeverfahren.</p>
+      <div class="msg msg-error" id="login-timeout" data-testid="login-timeout" hidden>Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.</div>
+      <button type="button" class="btn btn-primary btn-block" id="btn-smartlogin" data-testid="btn-smartlogin">Mit SmartLogin anmelden</button>
+      <button type="button" class="btn btn-block btn-off" id="btn-smartcard" data-testid="btn-smartcard" disabled>SmartCard / mIDentity</button>
+      <p class="hint-inline center">SmartCard und mIDentity sind in der Testumgebung nicht verfügbar.</p>
+      <p class="hint">Testumgebung: Der QR-Code ist nicht scannbar, die Bestätigung am Smartphone wird simuliert. Es besteht keine Verbindung zu DATEV.</p>
     </div>
     <div class="login-card testdata" id="testbelege" data-testid="testbelege">
       <h2>Testbelege</h2>
@@ -49,6 +46,27 @@
         <li><a href="testbelege/Kassenbon_2026-10-14.png" download data-testid="link-testbeleg">Kassenbon_2026-10-14.png</a></li>
         <li><a href="testbelege/Notiz_nicht_erlaubt.txt" download data-testid="link-testbeleg">Notiz_nicht_erlaubt.txt</a> <span class="hint-inline">wird abgelehnt</span></li>
       </ul>
+      <h3>Testvarianten</h3>
+      <ul class="file-list variants">
+        <li><a href="?" data-testid="link-variante-normal">Normal</a> <span class="hint-inline">alles sofort</span></li>
+        <li><a href="?delay=1500&amp;cookie=1&amp;popup=1&amp;confirm=5" data-testid="link-variante-realistisch">Realistisch</a> <span class="hint-inline">Ladezeiten, Cookie-Banner, Hinweis</span></li>
+        <li><a href="?confirm=5&amp;slow=3000&amp;fail=0.3&amp;timeout=120" data-testid="link-variante-stoerfaelle">Störfälle</a> <span class="hint-inline">langsamer Upload, Fehler, Zeitlimit</span></li>
+      </ul>
+    </div>
+   </div>
+  </section>
+
+  <!-- 1b. SmartLogin -->
+  <section class="view" id="view-smartlogin" data-testid="view-smartlogin" hidden>
+   <div class="login-wrap">
+    <div class="login-card smartlogin-card">
+      <h1>SmartLogin</h1>
+      <p class="muted">Scannen Sie den QR-Code mit der SmartLogin-App und bestätigen Sie die Anmeldung auf Ihrem Smartphone.</p>
+      <div class="qr" id="smartlogin-qr" data-testid="smartlogin-qr"></div>
+      <p class="qr-caption">Test-QR-Code, nicht scannbar</p>
+      <p class="wait" id="smartlogin-status" data-testid="smartlogin-status">Warte auf Bestätigung am Smartphone …</p>
+      <button type="button" class="btn btn-secondary btn-block" id="btn-smartlogin-simulieren" data-testid="btn-smartlogin-simulieren">Bestätigung simulieren</button>
+      <a href="#/login" class="link-cancel" id="btn-smartlogin-abbrechen" data-testid="btn-smartlogin-abbrechen">Abbrechen</a>
     </div>
    </div>
   </section>
@@ -110,6 +128,10 @@
     <div class="feedback" id="upload-feedback" data-testid="upload-feedback">
       <div class="feedback-summary">
         <p class="feedback-idle" id="upload-idle" data-testid="upload-idle">Noch kein Upload in dieser Sitzung.</p>
+        <div class="progress" id="upload-progress" data-testid="upload-progress" hidden>
+          <div class="progress-text" id="upload-progress-text" data-testid="upload-progress-text">Wird hochgeladen …</div>
+          <div class="progress-bar"><div class="progress-fill" id="upload-progress-fill"></div></div>
+        </div>
         <div class="msg msg-success" id="upload-success" data-testid="upload-success" hidden></div>
         <div class="msg msg-error" id="upload-error" data-testid="upload-error" hidden></div>
       </div>
@@ -141,11 +163,35 @@
     <p class="empty" id="beleg-leer" data-testid="beleg-leer">Für diesen Monat sind noch keine Belege vorhanden.</p>
 
     <footer class="settings" id="settings" data-testid="settings">
-      <span>Testumgebung · Daten nur lokal im Browser gespeichert (ohne Dateiinhalte)</span>
+      <span>Testumgebung · Daten nur lokal im Browser gespeichert (ohne Dateiinhalte) · Dateien bis 20 MB</span>
     </footer>
   </section>
 
 </main>
+
+<!-- Overlays, nur per URL-Parameter aktiv -->
+<div class="overlay" id="spinner" data-testid="spinner" hidden>
+  <div class="spinner-box"><span class="spinner-ring" aria-hidden="true"></span>Wird geladen …</div>
+</div>
+
+<div class="overlay overlay-bottom" id="cookie-banner" data-testid="cookie-banner" hidden>
+  <div class="cookie-box">
+    <h2>Cookies und Datenschutz</h2>
+    <p>Wir verwenden technisch notwendige Cookies. Optionale Cookies helfen uns, das Portal zu verbessern. Testumgebung: Es wird nichts erfasst.</p>
+    <div class="cookie-actions">
+      <button type="button" class="btn btn-secondary" id="btn-cookie-notwendig" data-testid="btn-cookie-notwendig">Nur notwendige</button>
+      <button type="button" class="btn btn-primary" id="btn-cookie-alle" data-testid="btn-cookie-alle">Alle akzeptieren</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="popup-hinweis" data-testid="popup-hinweis" hidden>
+  <div class="dialog" role="dialog" aria-labelledby="popup-titel">
+    <h2 id="popup-titel">Neu in Belege online</h2>
+    <p>Belege lassen sich jetzt auch per Drag-and-drop hochladen. Dieser Hinweis ist Teil der Testumgebung und erscheint einmal pro Sitzung.</p>
+    <button type="button" class="btn btn-primary" id="btn-popup-schliessen" data-testid="btn-popup-schliessen">Schließen</button>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
