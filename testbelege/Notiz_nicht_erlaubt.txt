@@ -1,0 +1,2 @@
+Dies ist keine Rechnung.
+Diese Datei testet die Ablehnung von nicht erlaubten Dateitypen.

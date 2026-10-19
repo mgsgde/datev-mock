@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unternehmen online (Mock)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar" id="topbar" data-testid="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">UO</span>
+    <span class="brand-name">Unternehmen online</span>
+    <span class="mock-badge" id="mock-badge" data-testid="mock-badge">Mock / Testumgebung</span>
+  </div>
+  <div class="topbar-right" id="topbar-right" hidden>
+    <span class="topbar-meta" id="topbar-meta" data-testid="topbar-meta">Beraternummer 12345</span>
+    <a href="#/login" class="logout" id="btn-abmelden" data-testid="btn-abmelden">Abmelden</a>
+  </div>
+</header>
+
+<main id="app">
+
+  <!-- 1. Login -->
+  <section class="view" id="view-login" data-testid="view-login" hidden>
+   <div class="login-wrap">
+    <div class="login-card">
+      <h1>Anmeldung</h1>
+      <p class="muted">Bitte melden Sie sich mit Ihren Zugangsdaten an.</p>
+      <form id="login-form" data-testid="login-form" novalidate autocomplete="off">
+        <label for="input-benutzername">Benutzername</label>
+        <input type="text" id="input-benutzername" data-testid="input-benutzername" name="benutzername" autocomplete="off" spellcheck="false">
+        <label for="input-passwort">Passwort</label>
+        <input type="password" id="input-passwort" data-testid="input-passwort" name="passwort" autocomplete="off">
+        <div class="msg msg-error" id="login-error" data-testid="login-error" hidden>Bitte Benutzername und Passwort eingeben.</div>
+        <button type="submit" class="btn btn-primary btn-block" id="btn-anmelden" data-testid="btn-anmelden">Anmelden</button>
+      </form>
+      <p class="hint">Testumgebung: Beliebige Werte werden akzeptiert. Es besteht keine Verbindung zu DATEV.</p>
+    </div>
+    <div class="login-card testdata" id="testbelege" data-testid="testbelege">
+      <h2>Testbelege</h2>
+      <p class="muted">Erfundene Rechnungen zum Hochladen. Herunterladen, dann unter „Belege online“ auswählen.</p>
+      <a class="btn btn-secondary btn-block" href="testbelege/testbelege.zip" download id="link-testbelege-zip" data-testid="link-testbelege-zip">Alle Testbelege (ZIP)</a>
+      <ul class="file-list">
+        <li><a href="testbelege/Mobilfunk_Rechnung_2026-09.pdf" download data-testid="link-testbeleg">Mobilfunk_Rechnung_2026-09.pdf</a></li>
+        <li><a href="testbelege/Rechnung_Bueromaterial_4711.pdf" download data-testid="link-testbeleg">Rechnung_Bueromaterial_4711.pdf</a></li>
+        <li><a href="testbelege/Rechnung_Internet_2026-10.pdf" download data-testid="link-testbeleg">Rechnung_Internet_2026-10.pdf</a></li>
+        <li><a href="testbelege/Kassenbon_2026-10-14.png" download data-testid="link-testbeleg">Kassenbon_2026-10-14.png</a></li>
+        <li><a href="testbelege/Notiz_nicht_erlaubt.txt" download data-testid="link-testbeleg">Notiz_nicht_erlaubt.txt</a> <span class="hint-inline">wird abgelehnt</span></li>
+      </ul>
+    </div>
+   </div>
+  </section>
+
+  <!-- 2. Mandantenauswahl -->
+  <section class="view" id="view-mandanten" data-testid="view-mandanten" hidden>
+    <h1>Mandantenauswahl</h1>
+    <p class="muted">Bitte wählen Sie den Mandanten aus, für den Sie Belege bearbeiten möchten.</p>
+    <div class="tiles">
+      <button type="button" class="tile" id="tile-mandant-10001" data-testid="tile-mandant-10001">
+        <span class="tile-title">Musterfirma GmbH (10001)</span>
+        <span class="tile-sub">Beraternummer 12345 · Mandantennummer 10001</span>
+        <span class="tile-action">Öffnen</span>
+      </button>
+      <button type="button" class="tile tile-disabled" id="tile-mandant-10002" data-testid="tile-mandant-10002" disabled aria-disabled="true">
+        <span class="tile-title">Beispiel Handel KG (10002)</span>
+        <span class="tile-sub">Beraternummer 12345 · Mandantennummer 10002</span>
+        <span class="tile-action">Kein Zugriff</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- 3. Belege online -->
+  <section class="view" id="view-belege" data-testid="view-belege" hidden>
+    <div class="page-head">
+      <h1>Belege online</h1>
+      <span class="client-label" id="client-label" data-testid="client-label">Musterfirma GmbH · Mandant 10001</span>
+      <button type="button" class="btn btn-small page-head-right" id="btn-reset" data-testid="btn-reset">Testdaten zurücksetzen</button>
+    </div>
+
+    <div class="toolbar" id="toolbar" data-testid="toolbar">
+      <div class="field">
+        <label for="select-belegtyp">Belegtyp</label>
+        <select id="select-belegtyp" data-testid="select-belegtyp">
+          <option value="Rechnungseingang" selected>Rechnungseingang</option>
+          <option value="Rechnungsausgang">Rechnungsausgang</option>
+          <option value="Kasse">Kasse</option>
+          <option value="Sonstige">Sonstige</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="select-monat">Monat</label>
+        <select id="select-monat" data-testid="select-monat"></select>
+      </div>
+      <div class="field field-btn">
+        <button type="button" class="btn btn-primary btn-upload" id="btn-belege-hochladen" data-testid="btn-belege-hochladen">Belege hochladen</button>
+        <input type="file" id="input-datei" data-testid="input-datei" multiple accept=".pdf,.jpg,.jpeg,.png" class="visually-hidden" tabindex="-1">
+      </div>
+      <div class="field field-btn toolbar-right">
+        <button type="button" class="btn btn-secondary" id="btn-protokoll" data-testid="btn-protokoll">Protokoll herunterladen</button>
+      </div>
+    </div>
+
+    <div class="dropzone" id="dropzone" data-testid="dropzone">
+      Dateien hierher ziehen (PDF, JPG, PNG) oder „Belege hochladen“ klicken
+    </div>
+
+    <!-- Meldungsbereich mit fester Höhe: die Belegtabelle bleibt immer an derselben Stelle -->
+    <div class="feedback" id="upload-feedback" data-testid="upload-feedback">
+      <div class="feedback-summary">
+        <p class="feedback-idle" id="upload-idle" data-testid="upload-idle">Noch kein Upload in dieser Sitzung.</p>
+        <div class="msg msg-success" id="upload-success" data-testid="upload-success" hidden></div>
+        <div class="msg msg-error" id="upload-error" data-testid="upload-error" hidden></div>
+      </div>
+      <div class="feedback-results">
+        <div class="feedback-caption">Ergebnis des letzten Uploads</div>
+        <table class="results" id="upload-results" data-testid="upload-results" hidden>
+          <tbody id="upload-results-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="list-head">
+      <h2 id="beleg-counter" data-testid="beleg-counter">0 Belege im Monat 10/2026</h2>
+    </div>
+
+    <table class="grid" id="beleg-tabelle" data-testid="beleg-tabelle">
+      <thead>
+        <tr>
+          <th>Dateiname</th>
+          <th>Belegtyp</th>
+          <th>Monat</th>
+          <th class="num">Größe</th>
+          <th>Hochgeladen am</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="beleg-tabelle-body" data-testid="beleg-tabelle-body"></tbody>
+    </table>
+    <p class="empty" id="beleg-leer" data-testid="beleg-leer">Für diesen Monat sind noch keine Belege vorhanden.</p>
+
+    <footer class="settings" id="settings" data-testid="settings">
+      <span>Testumgebung · Daten nur lokal im Browser gespeichert (ohne Dateiinhalte)</span>
+    </footer>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
