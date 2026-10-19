@@ -1,25 +1,29 @@
-/* Belege-Portal (DATEV-Ersatz) – Mock als Testziel für Klick-Automatisierung.
+/* Belege-Portal (Testumgebung) als Testziel für Klick-Automatisierung.
  * Kein Framework, kein Build, läuft per http:// und file://.
  * Gespeichert werden nur Metadaten (nie Dateiinhalte, nie Zugangsdaten).
  *
  * Testparameter in der URL (alle optional, siehe README):
  *   delay=1500   Spinner in ms bei jedem Seitenwechsel
  *   cookie=1     Cookie-Banner einmal pro Sitzung
- *   popup=1      Hinweis-Dialog beim ersten Öffnen von „Belege online“
+ *   popup=1      Hinweis-Dialog beim ersten Öffnen von „Upload online“
  *   confirm=5    SmartLogin bestätigt sich nach 5 s von selbst (sonst Klick durch einen Menschen)
  *   timeout=120  Sitzung läuft nach 120 s ohne Aktion ab
- *   fail=0.3     Anteil der Uploads, die fehlschlagen (0 bis 1)
- *   slow=3000    Upload dauert 3000 ms pro Datei, mit Fortschrittsanzeige
+ *   fail=0.3     Anteil der Dateien, deren Übertragung fehlschlägt (0 bis 1)
+ *   slow=3000    Übertragung dauert 3000 ms pro Datei, mit Fortschrittsanzeige
+ *   version=alt  ältere Upload-Version: zusätzlich TXT, DOCX, XLSX, MSG erlaubt
  */
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "uo-mock-belege-v1";
-  var SESSION_KEY = "uo-mock-session-v1";
-  var FLAGS_KEY = "uo-mock-flags-v1";
-  var STATUS_DELAY_MS = 2000;
+  var STORAGE_KEY = "uo-mock-belege-v2";
+  var SESSION_KEY = "uo-mock-session-v2";
+  var FLAGS_KEY = "uo-mock-flags-v2";
+  var VERFAHREN_KEY = "uo-mock-verfahren-v1";
   var MAX_BYTES = 20 * 1024 * 1024;
-  var ALLOWED_EXT = ["pdf", "jpg", "jpeg", "png"];
+  var MAX_FILES = 300;
+  var EXT_NEU = ["pdf", "gif", "jpg", "jpeg", "tif", "tiff", "png", "xml"];
+  var EXT_ALT = EXT_NEU.concat(["txt", "docx", "xlsx", "msg"]);
+  var TYPEN = ["Rechnungseingang", "Rechnungsausgang", "Kasse", "Sonstige"];
   var MANDANT = { name: "Musterfirma GmbH", nummer: "10001", berater: "12345" };
 
   var belege = loadBelege();
@@ -28,6 +32,10 @@
   var currentView = null;
   var busy = false;
   var confirmTimer = null;
+  var activeTyp = TYPEN[0];
+  var pending = {};            // Belegtyp -> [File], noch nicht übertragen
+  var dupQueue = [];           // Dubletten der letzten Übertragung, nacheinander gemeldet
+  TYPEN.forEach(function (t) { pending[t] = []; });
 
   function $(id) { return document.getElementById(id); }
 
@@ -52,9 +60,11 @@
       confirm: num("confirm", 0, 600),
       timeout: num("timeout", 0, 86400),
       fail: num("fail", 0, 1),
-      slow: num("slow", 0, 60000)
+      slow: num("slow", 0, 60000),
+      alt: q.version === "alt"
     };
   })();
+  var ALLOWED_EXT = P.alt ? EXT_ALT : EXT_NEU;
 
   function paramSummary() {
     var parts = [];
@@ -65,6 +75,7 @@
     if (P.timeout) parts.push("timeout=" + P.timeout);
     if (P.fail) parts.push("fail=" + P.fail);
     if (P.slow) parts.push("slow=" + P.slow);
+    if (P.alt) parts.push("version=alt");
     return parts.join(" · ");
   }
 
@@ -112,6 +123,15 @@
       window.sessionStorage.setItem(FLAGS_KEY, JSON.stringify(f));
     } catch (e) { /* ignorieren */ }
   }
+  function getVerfahren() {
+    try { return window.localStorage.getItem(VERFAHREN_KEY); } catch (e) { return null; }
+  }
+  function setVerfahren(v) {
+    try {
+      if (v) window.localStorage.setItem(VERFAHREN_KEY, v);
+      else window.localStorage.removeItem(VERFAHREN_KEY);
+    } catch (e) { /* ignorieren */ }
+  }
 
   // ---------- Formatierung ----------
   function pad(n) { return (n < 10 ? "0" : "") + n; }
@@ -119,8 +139,6 @@
     var d = new Date(iso);
     return pad(d.getDate()) + "." + pad(d.getMonth() + 1) + "." + d.getFullYear() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
-  function monthKey(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1); }
-  function monthLabel(key) { var p = key.split("-"); return p[1] + "/" + p[0]; }
   function fmtSize(bytes) {
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1).replace(".", ",") + " KB";
@@ -136,17 +154,27 @@
     if (text != null) e.textContent = text;
     return e;
   }
+  function dateien(n) { return n + (n === 1 ? " Datei" : " Dateien"); }
+  function pendingTotal() {
+    return TYPEN.reduce(function (s, t) { return s + pending[t].length; }, 0);
+  }
 
   // ---------- Routing ----------
-  var VIEWS = ["login", "smartlogin", "mandanten", "belege"];
+  var AUTH_VIEWS = ["login", "smartlogin"];
+  var APP_VIEWS = ["unternehmen", "uebersicht", "upload", "belege"];
+  var TITLES = { unternehmen: "Unternehmen auswählen", uebersicht: "Übersicht", upload: "Upload online", belege: "Belege online" };
 
   function targetView() {
     var hash = (window.location.hash || "").replace(/^#\/?/, "");
     var session = getSession();
     if (!session) return hash === "smartlogin" ? "smartlogin" : "login";
-    if (hash === "belege" && !session.mandant) return "mandanten";
-    if (VIEWS.indexOf(hash) < 0 || hash === "login" || hash === "smartlogin") return session.mandant ? "belege" : "mandanten";
+    if (!session.unternehmen) return "unternehmen";
+    if (APP_VIEWS.indexOf(hash) < 0) return "uebersicht";
     return hash;
+  }
+
+  function hideAll() {
+    AUTH_VIEWS.concat(APP_VIEWS).forEach(function (v) { $("view-" + v).hidden = true; });
   }
 
   function route() {
@@ -157,8 +185,9 @@
     }
     if (view === currentView) return;
     currentView = view;
+    $("user-menu").hidden = true;
     if (P.delay > 0) {
-      VIEWS.forEach(function (v) { $("view-" + v).hidden = true; });
+      hideAll();
       $("spinner").hidden = false;
       window.setTimeout(function () {
         $("spinner").hidden = true;
@@ -170,21 +199,25 @@
   }
 
   function showView(view) {
-    VIEWS.forEach(function (v) { $("view-" + v).hidden = v !== view; });
-    $("topbar-right").hidden = view === "login" || view === "smartlogin";
+    var isAuth = AUTH_VIEWS.indexOf(view) >= 0;
+    hideAll();
+    $("view-" + view).hidden = false;
+    $("auth").hidden = !isAuth;
+    $("app").hidden = isAuth;
     document.body.setAttribute("data-view", view);
     if (confirmTimer) { window.clearTimeout(confirmTimer); confirmTimer = null; }
+    if (!isAuth) $("app-name").textContent = TITLES[view];
 
     if (view === "login") {
-      $("login-timeout").hidden = !getFlag("expired");
+      showLogin();
     } else if (view === "smartlogin") {
       startSmartLogin();
-    } else if (view === "mandanten") {
-      $("topbar-meta").textContent = "Beraternummer " + MANDANT.berater;
+    } else if (view === "uebersicht") {
+      $("dash-anzahl").textContent = belege.length;
+    } else if (view === "upload") {
+      enterUpload();
     } else if (view === "belege") {
-      $("topbar-meta").textContent = "Beraternummer " + MANDANT.berater + " · Mandant " + MANDANT.nummer;
       renderBelege();
-      if (P.popup && !getFlag("popup")) $("popup-hinweis").hidden = false;
     }
   }
 
@@ -192,8 +225,21 @@
     window.location.hash = "#/" + view;
   }
 
-  // ---------- Anmeldung mit SmartLogin ----------
-  $("btn-smartlogin").addEventListener("click", function () {
+  // ---------- Anmeldung: Verfahren wählen ----------
+  function showLogin() {
+    $("login-timeout").hidden = !getFlag("expired");
+    $("login-error").hidden = true;
+    var immer = getVerfahren() === "smartlogin";
+    $("radio-smartlogin").checked = immer;
+    $("check-immer").checked = immer;
+  }
+  $("radio-smartlogin").addEventListener("change", function () { $("login-error").hidden = true; });
+  $("btn-weiter").addEventListener("click", function () {
+    if (!$("radio-smartlogin").checked) {
+      $("login-error").hidden = false;
+      return;
+    }
+    setVerfahren($("check-immer").checked ? "smartlogin" : null);
     setFlag("expired", false);
     go("smartlogin");
   });
@@ -216,9 +262,9 @@
     }
     finder(0, 0); finder(n - 7, 0); finder(0, n - 7);
     cells.forEach(function (c) {
-      rects += '<rect x="' + c[0] + '" y="' + c[1] + '" width="' + c[2] + '" height="' + c[3] + '" fill="' + (c[4] ? "#1d2125" : "#ffffff") + '"/>';
+      rects += '<rect x="' + c[0] + '" y="' + c[1] + '" width="' + c[2] + '" height="' + c[3] + '" fill="' + (c[4] ? "#1c2328" : "#ffffff") + '"/>';
     });
-    $("smartlogin-qr").innerHTML = '<svg viewBox="0 0 ' + n + " " + n + '" shape-rendering="crispEdges" fill="#1d2125" aria-label="Test-QR-Code">' + rects + "</svg>";
+    $("smartlogin-qr").innerHTML = '<svg viewBox="0 0 ' + n + " " + n + '" shape-rendering="crispEdges" fill="#1c2328" aria-label="Test-QR-Code">' + rects + "</svg>";
   }
 
   function startSmartLogin() {
@@ -235,17 +281,43 @@
     var st = $("smartlogin-status");
     st.className = "wait ok";
     st.textContent = "Anmeldung bestätigt";
-    setSession({ user: "smartlogin", mandant: null, last: Date.now() });
-    go("mandanten");
+    setSession({ unternehmen: null, last: Date.now() });
+    go("unternehmen");
   }
   $("btn-smartlogin-simulieren").addEventListener("click", confirmSmartLogin);
 
-  // ---------- Abmelden ----------
+  // ---------- Unternehmen ----------
+  $("row-unternehmen-10001").addEventListener("click", function () {
+    var s = getSession() || {};
+    s.unternehmen = MANDANT.nummer;
+    setSession(s);
+    go("uebersicht");
+  });
+  $("btn-unternehmen").addEventListener("click", function () {
+    if (busy) return;
+    var s = getSession();
+    if (s) { s.unternehmen = null; setSession(s); }
+    go("unternehmen");
+  });
+
+  // ---------- Benutzermenü und Abmelden ----------
+  $("btn-benutzer").addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    $("user-menu").hidden = !$("user-menu").hidden;
+  });
+  document.addEventListener("click", function (ev) {
+    if (!$("user-menu").hidden && !$("user-menu").contains(ev.target)) $("user-menu").hidden = true;
+  });
+
   function logout(expired) {
     setSession(null);
     setFlag("expired", !!expired);
-    clearUploadFeedback();
+    busy = false;
+    TYPEN.forEach(function (t) { pending[t] = []; });
+    dupQueue = [];
+    $("dublette").hidden = true;
     $("popup-hinweis").hidden = true;
+    $("user-menu").hidden = true;
     go("login");
     route();
   }
@@ -259,7 +331,8 @@
   function checkSession(ev) {
     if (!P.timeout) return;
     var s = getSession();
-    if (!s || currentView === "login" || currentView === "smartlogin") return;
+    if (!s || AUTH_VIEWS.indexOf(currentView) >= 0) return;
+    if (ev.target && $("testbar").contains(ev.target)) return;
     var now = Date.now();
     if (s.last && now - s.last > P.timeout * 1000) {
       ev.preventDefault();
@@ -272,14 +345,6 @@
   }
   ["click", "change", "drop"].forEach(function (t) { document.addEventListener(t, checkSession, true); });
 
-  // ---------- Mandantenauswahl ----------
-  $("tile-mandant-10001").addEventListener("click", function () {
-    var s = getSession() || {};
-    s.mandant = MANDANT.nummer;
-    setSession(s);
-    go("belege");
-  });
-
   // ---------- Cookie-Banner und Hinweis ----------
   function closeCookie() { setFlag("cookie", true); $("cookie-banner").hidden = true; }
   $("btn-cookie-notwendig").addEventListener("click", closeCookie);
@@ -289,176 +354,116 @@
     $("popup-hinweis").hidden = true;
   });
 
-  // ---------- Monatsfilter ----------
-  function buildMonthOptions() {
-    var sel = $("select-monat");
-    var now = new Date();
-    sel.innerHTML = "";
-    for (var i = 0; i < 12; i++) {
-      var d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      var key = monthKey(d);
-      sel.appendChild(el("option", { value: key }, monthLabel(key)));
-    }
-    sel.value = monthKey(now);
-  }
-  $("select-monat").addEventListener("change", renderBelege);
+  // ---------- Übersicht ----------
+  $("btn-belege-hochladen").addEventListener("click", function () { go("upload"); });
 
-  // ---------- Tabelle ----------
-  function renderBelege() {
-    var month = $("select-monat").value;
-    var body = $("beleg-tabelle-body");
-    body.innerHTML = "";
-    var rows = belege.filter(function (b) { return b.monat === month; });
-    rows.forEach(function (b) {
-      var tr = el("tr", { "data-testid": "beleg-row", "data-id": b.id, "data-dateiname": b.name, "data-status": b.status });
-      tr.appendChild(el("td", { "data-testid": "beleg-dateiname" }, b.name));
-      tr.appendChild(el("td", { "data-testid": "beleg-belegtyp" }, b.belegtyp));
-      tr.appendChild(el("td", { "data-testid": "beleg-monat" }, monthLabel(b.monat)));
-      tr.appendChild(el("td", { "class": "num", "data-testid": "beleg-groesse" }, fmtSize(b.size)));
-      tr.appendChild(el("td", { "data-testid": "beleg-zeit" }, fmtDateTime(b.timestamp)));
-      var td = el("td");
-      var cls = b.status === "Bereitgestellt" ? "status-bereitgestellt" : "status-hochgeladen";
-      td.appendChild(el("span", { "class": "status " + cls, "data-testid": "beleg-status" }, b.status));
-      tr.appendChild(td);
-      body.appendChild(tr);
-    });
-    $("beleg-leer").hidden = rows.length > 0;
-    $("beleg-counter").textContent = rows.length + (rows.length === 1 ? " Beleg" : " Belege") + " im Monat " + monthLabel(month);
+  // ---------- Upload online ----------
+  function enterUpload() {
+    // „Übertragene Dateien“ gilt nur für diesen Besuch der Seite
+    $("uebertragen-list").innerHTML = "";
+    $("uebertragen-box").hidden = true;
+    $("select-weiter").value = "";
+    hideNotices();
+    renderUpload();
+    if (P.popup && !getFlag("popup")) $("popup-hinweis").hidden = false;
   }
 
-  // ---------- Statuswechsel nach ~2 s ----------
-  function scheduleStatus(b) {
-    var age = Date.now() - new Date(b.timestamp).getTime();
-    var wait = Math.max(0, STATUS_DELAY_MS - age);
-    window.setTimeout(function () {
-      b.status = "Bereitgestellt";
-      saveBelege();
-      if (document.body.getAttribute("data-view") === "belege") renderBelege();
-    }, wait);
-  }
-
-  // ---------- Upload ----------
-  function clearUploadFeedback() {
-    $("upload-success").hidden = true;
+  function hideNotices() {
     $("upload-error").hidden = true;
     $("upload-progress").hidden = true;
-    $("upload-results").hidden = true;
-    $("upload-results-body").innerHTML = "";
-    $("upload-idle").hidden = false;
+  }
+  function showError(text) {
+    $("upload-progress").hidden = true;
+    $("upload-error").textContent = text;
+    $("upload-error").hidden = false;
   }
 
-  function setBusy(on) {
-    busy = on;
-    $("btn-belege-hochladen").disabled = on;
-    $("btn-belege-hochladen").textContent = on ? "Upload läuft …" : "Belege hochladen";
+  function renderUpload() {
+    TYPEN.forEach(function (t) {
+      var tab = $("tab-" + t.toLowerCase());
+      var n = pending[t].length;
+      tab.classList.toggle("active", t === activeTyp);
+      tab.setAttribute("aria-selected", t === activeTyp ? "true" : "false");
+      tab.querySelector(".tab-count").textContent = n ? " (" + n + ")" : "";
+    });
+    $("dz-typ").textContent = activeTyp;
+
+    var list = $("pv-list");
+    list.innerHTML = "";
+    var files = pending[activeTyp];
+    if (!files.length) {
+      list.appendChild(el("li", { "class": "pv-empty" }, "Ziehen Sie Dateien in die Fläche oben oder wählen Sie Dateien aus."));
+    }
+    files.forEach(function (f, i) {
+      var ext = extOf(f.name);
+      var li = el("li", { "data-testid": "pv-row", "data-dateiname": f.name });
+      li.appendChild(el("span", { "class": "pv-type" + (ext === "pdf" ? "" : " img") }, ext.toUpperCase().slice(0, 4)));
+      li.appendChild(el("span", { "class": "pv-name" }, f.name));
+      li.appendChild(el("span", { "class": "pv-size" }, fmtSize(f.size)));
+      var x = el("button", { type: "button", "class": "pv-x", "data-testid": "pv-entfernen", "aria-label": "Entfernen" }, "✕");
+      x.addEventListener("click", function () {
+        if (busy) return;
+        pending[activeTyp].splice(i, 1);
+        renderUpload();
+      });
+      li.appendChild(x);
+      list.appendChild(li);
+    });
+
+    $("pv-info").textContent = files.length ? dateien(files.length) + " ausgewählt" : "Keine Dateien ausgewählt";
+    var total = pendingTotal();
+    var btn = $("btn-uebertragen");
+    btn.disabled = busy || total === 0;
+    btn.textContent = busy ? "Übertragung läuft …" : (total ? dateien(total) + " übertragen" : "Dateien übertragen");
   }
 
-  function showProgress(done, total) {
-    $("upload-idle").hidden = true;
-    $("upload-progress").hidden = false;
-    $("upload-progress-text").textContent = "Wird hochgeladen: Datei " + Math.min(done + 1, total) + " von " + total;
-    $("upload-progress-fill").style.width = Math.round((done + 0.5) / total * 100) + "%";
-  }
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      if (busy) return;
+      activeTyp = tab.getAttribute("data-typ");
+      renderUpload();
+    });
+  });
 
-  function handleFiles(fileList) {
+  function addFiles(fileList) {
     if (busy) return;
     var files = Array.prototype.slice.call(fileList || []);
     if (!files.length) return;
-    clearUploadFeedback();
-
-    var belegtyp = $("select-belegtyp").value;
-    var month = $("select-monat").value;
-    var results = [];
-    var queue = [];
-
-    // Sofort prüfen: Dateityp, Größe, Dublette
-    files.forEach(function (f, i) {
+    hideNotices();
+    var rejected = [];
+    var tooMany = false;
+    files.forEach(function (f) {
       var ext = extOf(f.name);
       if (ALLOWED_EXT.indexOf(ext) < 0) {
-        results[i] = { name: f.name, kind: "error", text: "Abgelehnt: Dateityp nicht erlaubt (nur PDF, JPG, PNG)" };
+        rejected.push(f.name + ": Dateiformat wird nicht unterstützt");
       } else if (f.size > MAX_BYTES) {
-        results[i] = { name: f.name, kind: "error", text: "Abgelehnt: Datei größer als 20 MB" };
-      } else if (belege.some(function (b) { return b.name === f.name && b.size === f.size; }) ||
-                 queue.some(function (q) { return q.f.name === f.name && q.f.size === f.size; })) {
-        results[i] = { name: f.name, kind: "dup", text: "Bereits vorhanden" };
-      } else {
-        queue.push({ f: f, i: i, ext: ext });
+        rejected.push(f.name + ": Datei ist größer als 20 MB");
+      } else if (pendingTotal() >= MAX_FILES) {
+        tooMany = true;
+      } else if (!pending[activeTyp].some(function (p) { return p.name === f.name && p.size === f.size; })) {
+        pending[activeTyp].push(f);
       }
     });
-
-    var added = 0;
-    function uploadOne(q) {
-      if (P.fail > 0 && Math.random() < P.fail) {
-        results[q.i] = { name: q.f.name, kind: "error", text: "Upload fehlgeschlagen, bitte erneut versuchen" };
-        return;
-      }
-      var entry = {
-        id: "b" + Date.now().toString(36) + "-" + belege.length,
-        name: q.f.name,
-        size: q.f.size,
-        type: q.f.type || (q.ext === "pdf" ? "application/pdf" : "image/" + (q.ext === "jpg" ? "jpeg" : q.ext)),
-        belegtyp: belegtyp,
-        monat: month,
-        timestamp: new Date().toISOString(),
-        status: "Hochgeladen"
-      };
-      belege.push(entry);
-      scheduleStatus(entry);
-      added++;
-      results[q.i] = { name: q.f.name, kind: "ok", text: "Hochgeladen" };
+    if (tooMany) {
+      showError("Es können höchstens " + MAX_FILES + " Dateien auf einmal übertragen werden.");
+    } else if (rejected.length === 1) {
+      showError(rejected[0]);
+    } else if (rejected.length > 1) {
+      showError(rejected.length + " Dateien wurden nicht übernommen (Format nicht unterstützt oder größer als 20 MB).");
     }
-
-    function finish() {
-      saveBelege();
-      setBusy(false);
-      $("upload-progress").hidden = true;
-      if (added > 0) {
-        $("upload-success").textContent = added + (added === 1 ? " Beleg" : " Belege") + " hochgeladen";
-        $("upload-success").hidden = false;
-      }
-      var problems = results.length - added;
-      if (problems > 0) {
-        $("upload-error").textContent = problems + (problems === 1 ? " Datei wurde" : " Dateien wurden") + " nicht übernommen";
-        $("upload-error").hidden = false;
-      }
-      var rb = $("upload-results-body");
-      results.forEach(function (r) {
-        var tr = el("tr", { "class": "res-" + r.kind, "data-testid": "upload-result-" + r.kind, "data-dateiname": r.name });
-        tr.appendChild(el("td", null, r.name));
-        tr.appendChild(el("td", { "class": "res-text" }, r.text));
-        rb.appendChild(tr);
-      });
-      $("upload-results").hidden = false;
-      $("upload-idle").hidden = true;
-      renderBelege();
-    }
-
-    if (P.slow > 0 && queue.length) {
-      setBusy(true);
-      var k = 0;
-      showProgress(0, queue.length);
-      (function next() {
-        window.setTimeout(function () {
-          uploadOne(queue[k]);
-          k++;
-          if (k < queue.length) { showProgress(k, queue.length); next(); }
-          else finish();
-        }, P.slow);
-      })();
-    } else {
-      queue.forEach(uploadOne);
-      finish();
-    }
+    renderUpload();
   }
 
   var fileInput = $("input-datei");
-  $("btn-belege-hochladen").addEventListener("click", function () {
+  function openPicker() {
     if (busy) return;
     fileInput.value = "";
     fileInput.click();
-  });
+  }
+  $("btn-dateien-auswaehlen").addEventListener("click", openPicker);
+  $("btn-weitere-dateien").addEventListener("click", openPicker);
   fileInput.addEventListener("change", function () {
-    handleFiles(fileInput.files);
+    addFiles(fileInput.files);
     fileInput.value = "";
   });
 
@@ -472,20 +477,139 @@
   dz.addEventListener("drop", function (ev) {
     ev.preventDefault();
     dz.classList.remove("dragover");
-    if (ev.dataTransfer && ev.dataTransfer.files) handleFiles(ev.dataTransfer.files);
+    if (ev.dataTransfer && ev.dataTransfer.files) addFiles(ev.dataTransfer.files);
   });
+
+  // ---------- Übertragen ----------
+  function addDone(entry) {
+    var li = el("li", { "data-testid": "uebertragen-row", "data-dateiname": entry.name });
+    li.appendChild(el("div", { "class": "done-name" }, entry.name));
+    li.appendChild(el("div", { "class": "done-meta" }, entry.belegtyp + " · " + fmtSize(entry.size) + " · " + fmtDateTime(entry.timestamp)));
+    $("uebertragen-list").appendChild(li);
+    var n = $("uebertragen-list").children.length;
+    $("uebertragen-titel").textContent = "Übertragene Dateien (" + n + ")";
+    $("uebertragen-box").hidden = false;
+  }
+
+  function showProgress(done, total) {
+    $("upload-error").hidden = true;
+    $("upload-progress").textContent = "Wird übertragen: Datei " + Math.min(done + 1, total) + " von " + total;
+    $("upload-progress").hidden = false;
+  }
+
+  $("btn-uebertragen").addEventListener("click", function () {
+    if (busy) return;
+    var queue = [];
+    TYPEN.forEach(function (t) { pending[t].forEach(function (f) { queue.push({ f: f, typ: t }); }); });
+    if (!queue.length) return;
+    hideNotices();
+    var failed = {};
+    TYPEN.forEach(function (t) { failed[t] = []; });
+    var nFailed = 0;
+    dupQueue = [];
+
+    function one(q) {
+      var f = q.f;
+      if (belege.some(function (b) { return b.name === f.name && b.size === f.size; })) {
+        dupQueue.push({ name: f.name, size: f.size, typ: q.typ });
+        return;
+      }
+      if (P.fail > 0 && Math.random() < P.fail) {
+        failed[q.typ].push(f);
+        nFailed++;
+        return;
+      }
+      var ext = extOf(f.name);
+      var entry = {
+        id: "b" + Date.now().toString(36) + "-" + belege.length,
+        name: f.name,
+        size: f.size,
+        type: f.type || ext,
+        belegtyp: q.typ,
+        timestamp: new Date().toISOString()
+      };
+      belege.push(entry);
+      addDone(entry);
+    }
+
+    function finish() {
+      saveBelege();
+      busy = false;
+      pending = failed;  // fehlgeschlagene bleiben zum erneuten Übertragen stehen
+      $("upload-progress").hidden = true;
+      if (nFailed) showError(dateien(nFailed) + (nFailed === 1 ? " konnte" : " konnten") + " nicht übertragen werden. Bitte erneut versuchen.");
+      renderUpload();
+      nextDup();
+    }
+
+    busy = true;
+    if (P.slow > 0) {
+      var k = 0;
+      renderUpload();
+      showProgress(0, queue.length);
+      (function next() {
+        window.setTimeout(function () {
+          if (!busy) return; // abgemeldet
+          one(queue[k]);
+          k++;
+          if (k < queue.length) { showProgress(k, queue.length); next(); }
+          else finish();
+        }, P.slow);
+      })();
+    } else {
+      queue.forEach(one);
+      finish();
+    }
+  });
+
+  // Dublette: Hinweisfenster pro Datei, nacheinander
+  function nextDup() {
+    var d = dupQueue.shift();
+    if (!d) { $("dublette").hidden = true; return; }
+    $("dublette-datei").textContent = d.name + "\n" + fmtSize(d.size) + " · " + d.typ;
+    $("dublette").setAttribute("data-dateiname", d.name);
+    $("dublette").hidden = false;
+  }
+  $("btn-dublette-schliessen").addEventListener("click", nextDup);
+  $("btn-original-anzeigen").addEventListener("click", function () {
+    dupQueue = [];
+    $("dublette").hidden = true;
+    go("belege");
+  });
+
+  $("select-weiter").addEventListener("change", function () {
+    var v = $("select-weiter").value;
+    if (v) go(v);
+  });
+
+  // ---------- Belege online ----------
+  function renderBelege() {
+    var body = $("beleg-tabelle-body");
+    body.innerHTML = "";
+    var rows = belege.slice().sort(function (a, b) { return a.timestamp < b.timestamp ? 1 : -1; });
+    rows.forEach(function (b) {
+      var tr = el("tr", { "data-testid": "beleg-row", "data-id": b.id, "data-dateiname": b.name });
+      tr.appendChild(el("td", { "data-testid": "beleg-dateiname" }, b.name));
+      tr.appendChild(el("td", { "data-testid": "beleg-belegtyp" }, b.belegtyp));
+      tr.appendChild(el("td", { "data-testid": "beleg-zeit" }, fmtDateTime(b.timestamp)));
+      tr.appendChild(el("td", { "class": "num", "data-testid": "beleg-groesse" }, fmtSize(b.size)));
+      body.appendChild(tr);
+    });
+    $("beleg-leer").hidden = rows.length > 0;
+    $("beleg-counter").textContent = rows.length + (rows.length === 1 ? " Beleg" : " Belege") + " in der Belegablage";
+  }
 
   // ---------- Protokoll ----------
   $("btn-protokoll").addEventListener("click", function () {
     var payload = {
       erstellt: new Date().toISOString(),
-      quelle: "Belege-Portal (DATEV-Ersatz, Testumgebung)",
+      quelle: "Belege-Portal (Testumgebung)",
       testparameter: paramSummary() || "keine",
       beraternummer: MANDANT.berater,
       mandantennummer: MANDANT.nummer,
       anzahl: belege.length,
       belege: belege.map(function (b) {
-        return { name: b.name, size: b.size, type: b.type, belegtyp: b.belegtyp, monat: monthLabel(b.monat), timestamp: b.timestamp, status: b.status };
+        return { name: b.name, size: b.size, type: b.type, belegtyp: b.belegtyp, timestamp: b.timestamp };
       })
     };
     var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -502,17 +626,20 @@
     if (busy) return;
     belege = [];
     try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignorieren */ }
-    clearUploadFeedback();
+    TYPEN.forEach(function (t) { pending[t] = []; });
+    $("uebertragen-list").innerHTML = "";
+    $("uebertragen-box").hidden = true;
+    hideNotices();
+    renderUpload();
     renderBelege();
+    $("dash-anzahl").textContent = "0";
   });
 
   // ---------- Start ----------
   buildQr();
-  buildMonthOptions();
   var summary = paramSummary();
-  if (summary) { $("mock-params").textContent = "Test: " + summary; $("mock-params").hidden = false; }
+  if (summary) { $("mock-params").textContent = "Test: " + summary; $("mock-params").title = summary; $("mock-params").hidden = false; }
   if (P.cookie && !getFlag("cookie")) $("cookie-banner").hidden = false;
-  belege.forEach(function (b) { if (b.status !== "Bereitgestellt") scheduleStatus(b); });
   window.addEventListener("hashchange", route);
   route();
 })();
